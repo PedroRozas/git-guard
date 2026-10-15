@@ -1,0 +1,12 @@
+{
+  "name": "git-guard",
+  "description": "git-guard: keeps Claude Code from committing, pushing or opening PRs without your permission",
+  "owner": { "name": "Pedro Rozas" },
+  "plugins": [
+    {
+      "name": "git-guard",
+      "source": "./",
+      "description": "Stops Claude Code from committing, pushing or opening PRs unless you grant a counted, expiring permission, and checks commit messages"
+    }
+  ]
+}

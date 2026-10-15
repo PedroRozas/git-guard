@@ -1,0 +1,42 @@
+{
+  "name": "git-guard",
+  "version": "0.3.0",
+  "description": "Stops Claude Code from committing, pushing or opening PRs unless you grant a counted, expiring permission, and checks commit messages",
+  "author": { "name": "Pedro Rozas" },
+  "license": "MIT",
+  "repository": "https://github.com/PedroRozas/git-guard",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "language": {
+      "type": "string",
+      "title": "Language",
+      "description": "Language of the messages and commands (en uses /git-allow and /git-revoke, es uses /permitir and /revocar)",
+      "options": ["en", "es"],
+      "default": "en"
+    },
+    "conventionalCommits": {
+      "type": "boolean",
+      "title": "Require Conventional Commits",
+      "description": "Reject commit messages whose first line is not type(scope): description",
+      "default": true
+    },
+    "englishMessages": {
+      "type": "boolean",
+      "title": "Require English commit messages",
+      "description": "Reject commit messages that look like Spanish",
+      "default": false
+    },
+    "blockPullRequests": {
+      "type": "boolean",
+      "title": "Block pull request creation",
+      "description": "Reject gh pr create so you open pull requests yourself",
+      "default": true
+    },
+    "blockAiAttribution": {
+      "type": "boolean",
+      "title": "Block AI attribution",
+      "description": "Reject Co-Authored-By trailers and Generated with Claude signatures in commit commands",
+      "default": true
+    }
+  }
+}
