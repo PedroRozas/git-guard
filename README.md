@@ -18,16 +18,16 @@ git-guard sits in front of every Bash command the agent runs and applies one rul
 At the prompt of a Claude Code terminal session:
 
 ```
-/plugin install git-guard --marketplace PedroRozas/git-guard
+/plugin install git-guard --marketplace PedroRozas/claude-plugins
 ```
 
 From a shell:
 
 ```
-claude plugin install git-guard --marketplace PedroRozas/git-guard
+claude plugin install git-guard --marketplace PedroRozas/claude-plugins
 ```
 
-In the desktop app, where `/plugin` does not run: click **+** next to the prompt box, then **Plugins**, **Add marketplace** with `PedroRozas/git-guard`, then **Add plugin**.
+In the desktop app, where `/plugin` does not run: click **+** next to the prompt box, then **Plugins**, **Add marketplace** with `PedroRozas/claude-plugins`, then **Add plugin**.
 
 Answer `y` to add the marketplace, then choose a scope. Install it at the **user** scope so it protects every project.
 
