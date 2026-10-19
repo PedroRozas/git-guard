@@ -12,7 +12,10 @@ export type Rules = {
   blockAiAttribution: boolean
 }
 
-export type Verdict = { kind: 'pass' } | { kind: 'deny'; reason: string } | { kind: 'consume'; actions: GitAction[] }
+export type Verdict =
+  | { kind: 'pass' }
+  | { kind: 'deny'; reason: string }
+  | { kind: 'consume'; actions: GitAction[]; repoDirectory: string | null }
 
 const DEFAULT_RULES: Rules = {
   conventionalCommits: true,
@@ -35,6 +38,7 @@ const deny = (reason: string): Verdict => ({ kind: 'deny', reason: `git-guard: $
 const requestedActions = (analysis: GitCommandAnalysis): GitAction[] => [
   ...(analysis.commitCount > 0 ? (['commit'] as const) : []),
   ...(analysis.pushCount > 0 ? (['push'] as const) : []),
+  ...(analysis.forcePushCount > 0 ? (['force'] as const) : []),
 ]
 
 const checksMessage = (rules: Rules): boolean =>
@@ -56,10 +60,19 @@ const findCommitProblem = (analysis: GitCommandAnalysis, rules: Rules, messages:
     : messages.invalidMessage(problems.map(problem => messages.messageProblems[problem]).join('; '))
 }
 
-const describeMissingPermission = (missing: readonly GitAction[], messages: Messages): string => {
-  const argument = missing.length === 2 ? messages.both : missing[0]
+const isCommitAndPush = (actions: readonly GitAction[]): boolean =>
+  actions.length === 2 && actions.includes('commit') && actions.includes('push')
 
-  return messages.missingPermission(missing.join(` ${messages.and} `), `/${messages.grantCommand} ${argument}`)
+const grantArguments = (missing: readonly GitAction[], messages: Messages): string[] =>
+  isCommitAndPush(missing) ? [messages.both] : [...missing]
+
+const describeMissingPermission = (missing: readonly GitAction[], messages: Messages): string => {
+  const grantLines = grantArguments(missing, messages).map(argument => `/${messages.grantCommand} ${argument}`)
+
+  return messages.missingPermission(
+    missing.map(action => messages.actionNames[action]).join(` ${messages.and} `),
+    grantLines.join(` ${messages.and} `),
+  )
 }
 
 export const judgeCommand = (command: string, grants: Grants, rules: Rules, messages: Messages): Verdict => {
@@ -79,8 +92,12 @@ export const judgeCommand = (command: string, grants: Grants, rules: Rules, mess
     return deny(messages.aiAttributionBlocked)
   }
 
-  if (analysis.commitCount > 1 || analysis.pushCount > 1) {
+  if (analysis.commitCount > 1 || analysis.pushCount + analysis.forcePushCount > 1) {
     return deny(messages.oneCommitOnePush)
+  }
+
+  if (analysis.isRepeated) {
+    return deny(messages.repeatedAction)
   }
 
   const commitProblem = findCommitProblem(analysis, rules, messages)
@@ -95,5 +112,5 @@ export const judgeCommand = (command: string, grants: Grants, rules: Rules, mess
     return deny(describeMissingPermission(missing, messages))
   }
 
-  return { kind: 'consume', actions }
+  return { kind: 'consume', actions, repoDirectory: analysis.repoDirectory }
 }

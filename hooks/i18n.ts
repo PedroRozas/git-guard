@@ -1,3 +1,4 @@
+import type { GitAction } from '../types'
 import type { CommitMessageProblem } from './git-command'
 
 export type Language = 'es' | 'en'
@@ -9,6 +10,7 @@ export type Messages = {
   grantArgumentHint: string
   revokeDescription: string
   and: string
+  actionNames: Readonly<Record<GitAction, string>>
   both: string
   nothing: string
   singleUse: string
@@ -24,6 +26,7 @@ export type Messages = {
   pullRequestBlocked: string
   aiAttributionBlocked: string
   oneCommitOnePush: string
+  repeatedAction: string
   messageNotValidatable: string
   invalidMessage: (problems: string) => string
   messageProblems: Readonly<Record<CommitMessageProblem, string>>
@@ -33,15 +36,16 @@ export type Messages = {
 const SPANISH: Messages = {
   grantCommand: 'permitir',
   revokeCommand: 'revocar',
-  grantDescription: 'Autoriza N commits, pushes o ambos (1 por defecto); vence al terminar el próximo turno',
-  grantArgumentHint: 'commit | push | ambos [cantidad]',
+  grantDescription: 'Autoriza N commits, pushes, force pushes o commit y push (1 por defecto); vence al terminar el próximo turno',
+  grantArgumentHint: 'commit | push | force | ambos [cantidad]',
   revokeDescription: 'Revoca los permisos de commit y push pendientes',
   and: 'y',
+  actionNames: { commit: 'commit', push: 'push', force: 'force push' },
   both: 'ambos',
   nothing: 'nada',
   singleUse: '(un solo uso)',
   multipleUses: count => `(${count} usos)`,
-  usage: maxCount => `Uso: /permitir commit | push | ambos [cantidad 1-${maxCount}]`,
+  usage: maxCount => `Uso: /permitir commit | push | force | ambos [cantidad 1-${maxCount}]`,
   usageReply: (usage, granted) => `${usage}. Autorizado ahora: ${granted}.`,
   authorizedPrompt: request => `El usuario autorizó ${request}. Procede con lo que propusiste.`,
   authorizedReply: (request, available) =>
@@ -53,6 +57,7 @@ const SPANISH: Messages = {
   pullRequestBlocked: 'los PRs los crea el usuario; no ejecutes gh pr create',
   aiAttributionBlocked: 'quita el trailer Co-Authored-By y cualquier firma de Claude',
   oneCommitOnePush: 'un solo commit y un solo push por comando',
+  repeatedAction: 'nada de commits ni pushes dentro de loops, xargs, foreach o -exec; ejecuta cada uno como su propio comando',
   messageNotValidatable: 'el mensaje del commit debe ir con -m o heredoc para poder validarlo',
   invalidMessage: problems => `mensaje inválido: ${problems}`,
   messageProblems: {
@@ -66,15 +71,16 @@ const SPANISH: Messages = {
 const ENGLISH: Messages = {
   grantCommand: 'git-allow',
   revokeCommand: 'git-revoke',
-  grantDescription: 'Allow N commits, pushes or both (1 by default); expires when the next turn ends',
-  grantArgumentHint: 'commit | push | both [count]',
+  grantDescription: 'Allow N commits, pushes, force pushes or commit and push (1 by default); expires when the next turn ends',
+  grantArgumentHint: 'commit | push | force | both [count]',
   revokeDescription: 'Revoke the pending commit and push permissions',
   and: 'and',
+  actionNames: { commit: 'commit', push: 'push', force: 'force push' },
   both: 'both',
   nothing: 'nothing',
   singleUse: '(single use)',
   multipleUses: count => `(${count} uses)`,
-  usage: maxCount => `Usage: /git-allow commit | push | both [count 1-${maxCount}]`,
+  usage: maxCount => `Usage: /git-allow commit | push | force | both [count 1-${maxCount}]`,
   usageReply: (usage, granted) => `${usage}. Currently allowed: ${granted}.`,
   authorizedPrompt: request => `The user allowed ${request}. Go ahead with what you proposed.`,
   authorizedReply: (request, available) =>
@@ -86,6 +92,7 @@ const ENGLISH: Messages = {
   pullRequestBlocked: 'pull requests are opened by the user; do not run gh pr create',
   aiAttributionBlocked: 'remove the Co-Authored-By trailer and any Claude signature',
   oneCommitOnePush: 'one commit and one push per command',
+  repeatedAction: 'no commits or pushes inside loops, xargs, foreach or -exec; run each one as its own command',
   messageNotValidatable: 'the commit message must be passed with -m or a heredoc so it can be checked',
   invalidMessage: problems => `invalid message: ${problems}`,
   messageProblems: {

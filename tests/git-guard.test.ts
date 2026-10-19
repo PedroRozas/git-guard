@@ -27,6 +27,23 @@ const answerBash = (on: On) =>
 const failBash = (on: On) =>
   on('tool.call', { tool: 'Bash' }, () => ({ isError: true as const, result: 'exit 128', text: 'Exit code 128' }))
 
+const refs = (head: string, remoteMain: string): string =>
+  `${head} HEAD\n${head} refs/heads/main\n${remoteMain} refs/remotes/origin/main\n`
+
+const answerGit = (on: On, snapshots: readonly string[], exitCode = 0) => {
+  const directories: string[] = []
+  const pending = [...snapshots]
+  on('process.run', ($, e) => {
+    directories.push(e.argv[2] ?? '')
+
+    return {
+      value: { exitCode, stdout: pending.shift() ?? '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+    }
+  })
+
+  return directories
+}
+
 describe('git-guard in Spanish', () => {
   test('lets non-git commands through', SPANISH, async ($, on) => {
     answerBash(on)
@@ -244,7 +261,7 @@ describe('git-guard in English', () => {
     const allowed = await runCommand($, 'git-allow', 'commit 2')
     const revoked = await runCommand($, 'git-revoke')
 
-    expect(usage.text).toContain('Usage: /git-allow commit | push | both')
+    expect(usage.text).toContain('Usage: /git-allow commit | push | force | both')
     expect(allowed.text).toContain('Allowed: commit (2 uses)')
     expect(revoked.text).toBe('Commit and push permissions revoked.')
   })
@@ -334,8 +351,9 @@ describe('git-guard rules', () => {
 })
 
 describe('git-guard settles a grant only when the command runs', () => {
-  test('a command that fails gives the permission back', SPANISH, async ($, on) => {
+  test('a command that fails before committing gives the permission back', SPANISH, async ($, on) => {
     failBash(on)
+    answerGit(on, [refs('aaa', 'ccc'), refs('aaa', 'ccc')])
     await runCommand($, 'permitir', 'ambos')
 
     const failed = await $.tool.call({ tool: 'Bash', command: `git pull --rebase && ${VALID_COMMIT} && git push` })
@@ -368,5 +386,230 @@ describe('git-guard settles a grant only when the command runs', () => {
     const status = await runCommand($, 'permitir')
 
     expect(status.text).toContain('nada')
+  })
+
+  test('a commit that ran before a failing push is spent and the push is given back', SPANISH, async ($, on) => {
+    failBash(on)
+    answerGit(on, [refs('aaa', 'ccc'), refs('bbb', 'ccc')])
+    await runCommand($, 'permitir', 'ambos')
+
+    await $.tool.call({ tool: 'Bash', command: `${VALID_COMMIT} && git push` })
+    const status = await runCommand($, 'permitir')
+
+    expect(status.text).toContain('Autorizado ahora: 1 push.')
+  })
+
+  test('a commit followed by a failing step is spent', SPANISH, async ($, on) => {
+    failBash(on)
+    answerGit(on, [refs('aaa', 'ccc'), refs('bbb', 'ccc')])
+    await runCommand($, 'permitir', 'commit')
+
+    await $.tool.call({ tool: 'Bash', command: `${VALID_COMMIT} && npm test` })
+    const status = await runCommand($, 'permitir')
+
+    expect(status.text).toContain('nada')
+  })
+
+  test('a failed command outside a readable repository spends the permission', SPANISH, async ($, on) => {
+    failBash(on)
+    answerGit(on, [], 128)
+    await runCommand($, 'permitir', 'commit')
+
+    await $.tool.call({ tool: 'Bash', command: VALID_COMMIT })
+    const status = await runCommand($, 'permitir')
+
+    expect(status.text).toContain('nada')
+  })
+
+  test('reads the repository the command changes into', SPANISH, async ($, on) => {
+    answerBash(on)
+    const directories = answerGit(on, [refs('aaa', 'ccc')])
+    await runCommand($, 'permitir', 'commit')
+
+    await $.tool.call({ tool: 'Bash', command: `cd api && git -C web ${VALID_COMMIT.slice('git '.length)}` })
+
+    expect(directories).toEqual(['./api/web'])
+  })
+
+  test('reads the repository of a subshell that changes into it', SPANISH, async ($, on) => {
+    answerBash(on)
+    const directories = answerGit(on, [refs('aaa', 'ccc')])
+    await runCommand($, 'permitir', 'commit')
+
+    await $.tool.call({ tool: 'Bash', command: `(cd ../api && ${VALID_COMMIT} && npm test)` })
+
+    expect(directories).toEqual(['./../api'])
+  })
+
+  test('a commit that moved a branch but not HEAD is spent', SPANISH, async ($, on) => {
+    failBash(on)
+    answerGit(on, [
+      `${refs('aaa', 'ccc')}ddd refs/heads/feature\n`,
+      `${refs('aaa', 'ccc')}eee refs/heads/feature\n`,
+    ])
+    await runCommand($, 'permitir', 'commit')
+
+    await $.tool.call({ tool: 'Bash', command: `${VALID_COMMIT} && npm test` })
+    const status = await runCommand($, 'permitir')
+
+    expect(status.text).toContain('nada')
+  })
+})
+
+describe('git-guard sees through command spellings', () => {
+  const HIDDEN_COMMITS = [
+    'git -C ../api commit -m "feat: add x"',
+    'git -C "/my repo" commit -m "feat: add x"',
+    'git -c user.name=bot commit -m "feat: add x"',
+    'git --no-pager -p commit -m "feat: add x"',
+    'git "commit" -m "feat: add x"',
+    'command git commit -m "feat: add x"',
+    'env GIT_AUTHOR_NAME=bot git commit -m "feat: add x"',
+    '/usr/bin/git commit -m "feat: add x"',
+    `bash -c 'git commit -m "feat: add x"'`,
+    'git -c user.name="Claude Bot" commit -m "feat: add x"',
+    'git \\\n  -C ../api commit -m "feat: add x"',
+  ]
+  const HIDDEN_PUSHES = [
+    `sh -c 'git push'`,
+    'git -C ../api push',
+    'cd api && git push origin main',
+    "/bin/bash <<'EOF'\ngit push\nEOF",
+    "cat <<'EOF' | bash\ngit push\nEOF",
+  ]
+
+  test('every spelling of a commit needs a commit permission', async ($, on) => {
+    answerBash(on)
+    const denies = await Promise.all(
+      HIDDEN_COMMITS.map(async command => (await $.tool.call({ tool: 'Bash', command })).deny),
+    )
+
+    expect(denies.every(deny => deny?.includes('/git-allow commit'))).toBe(true)
+  })
+
+  test('every spelling of a push needs a push permission', async ($, on) => {
+    answerBash(on)
+    const denies = await Promise.all(
+      HIDDEN_PUSHES.map(async command => (await $.tool.call({ tool: 'Bash', command })).deny),
+    )
+
+    expect(denies.every(deny => deny?.includes('/git-allow push'))).toBe(true)
+  })
+
+  test('a heredoc fed to a shell is read as commands', async ($, on) => {
+    answerBash(on)
+    const bash = await $.tool.call({ tool: 'Bash', command: `bash <<'EOF'\n${VALID_COMMIT}\nEOF` })
+    const remote = await $.tool.call({ tool: 'Bash', command: 'ssh host <<EOF\ngit push\nEOF' })
+
+    expect(bash.deny).toContain('/git-allow commit')
+    expect(remote.deny).toContain('/git-allow push')
+  })
+
+  test('text in any heredoc that is not fed to a shell is not read as commands', async ($, on) => {
+    answerBash(on)
+    const command = [
+      "python3 - <<'PY'",
+      'print(1)',
+      'PY',
+      "cat <<'EOF' > CHANGELOG.md",
+      `use gh pr new, git push --force and ${VALID_COMMIT}`,
+      'EOF',
+    ].join('\n')
+    const ran = await $.tool.call({ tool: 'Bash', command })
+
+    expect(ran.deny).toBeUndefined()
+  })
+
+  test('a command on the opening line of a heredoc is still read', async ($, on) => {
+    answerBash(on)
+    await runCommand($, 'git-allow', 'both')
+    const command = "git commit -F - <<'EOF' && git push --force-with-lease\nfeat: add x\nEOF"
+    const ran = await $.tool.call({ tool: 'Bash', command })
+
+    expect(ran.deny).toContain('/git-allow force')
+  })
+
+  test('the commit message comes from the commit, not from an earlier heredoc', async ($, on) => {
+    answerBash(on)
+    await runCommand($, 'git-allow', 'commit')
+    const command = "cat > CHANGELOG.md <<'EOF'\n# Changelog\nEOF\ngit commit -m \"docs: update changelog\""
+    const ran = await $.tool.call({ tool: 'Bash', command })
+
+    expect(ran.deny).toBeUndefined()
+  })
+
+  test('commits and pushes inside loops are rejected', async ($, on) => {
+    answerBash(on)
+    await runCommand($, 'git-allow', 'push 50')
+    const loop = await $.tool.call({ tool: 'Bash', command: 'for d in api web; do git -C "$d" push; done' })
+    const xargs = await $.tool.call({ tool: 'Bash', command: 'ls | xargs -I{} git -C {} push' })
+
+    expect(loop.deny).toContain('loops')
+    expect(xargs.deny).toContain('loops')
+  })
+
+  test('long and adversarial commands are judged quickly', async ($, on) => {
+    answerBash(on)
+    const repeatedOptions = `git${' -c'.repeat(40)} x status`
+    const longHeredoc = `python3 - <<'PY'\n${'x = 1 + 2 '.repeat(5000)}\nPY`
+    const startedAt = Date.now()
+    await $.tool.call({ tool: 'Bash', command: repeatedOptions })
+    await $.tool.call({ tool: 'Bash', command: longHeredoc })
+
+    expect(Date.now() - startedAt).toBeLessThan(1000)
+  })
+
+  test('gh pr new is blocked like gh pr create', async ($, on) => {
+    answerBash(on)
+    const ran = await $.tool.call({ tool: 'Bash', command: 'gh pr new --fill' })
+
+    expect(ran.deny).toContain('pull requests')
+  })
+})
+
+describe('git-guard treats force pushes as their own permission', () => {
+  const FORCE_PUSHES = [
+    'git push --force',
+    'git push -f origin main',
+    'git push --force-with-lease',
+    'git push origin +main',
+    'git push origin --delete old-branch',
+    'git push origin feat/x \\\n  --force-with-lease',
+    'git -c core.sshCommand="ssh -i ~/.ssh/deploy_key" push --force',
+  ]
+
+  test('a push permission does not cover a force push', async ($, on) => {
+    answerBash(on)
+    await runCommand($, 'git-allow', 'push 50')
+    const denies = await Promise.all(
+      FORCE_PUSHES.map(async command => (await $.tool.call({ tool: 'Bash', command })).deny),
+    )
+
+    expect(denies.every(deny => deny?.includes('/git-allow force'))).toBe(true)
+  })
+
+  test('a force permission allows one force push and not a plain push', async ($, on) => {
+    answerBash(on)
+    await runCommand($, 'git-allow', 'force')
+
+    const plain = await $.tool.call({ tool: 'Bash', command: 'git push' })
+    const forced = await $.tool.call({ tool: 'Bash', command: 'git push --force-with-lease' })
+    const again = await $.tool.call({ tool: 'Bash', command: 'git push --force-with-lease' })
+
+    expect(plain.deny).toContain('/git-allow push')
+    expect(forced.deny).toBeUndefined()
+    expect(again.deny).toContain('/git-allow force')
+  })
+
+  test('the band names force pushes', async $ => {
+    await runCommand($, 'git-allow', 'force')
+    const ui = await $.ui.mount({
+      plugin: 'git-guard',
+      surface: 'terminal',
+      component: 'AbovePrompt',
+      props: BAND_PROPS,
+    })
+
+    expect(await ui.find({ text: /git-guard: 1 force push left/ })).toBeDefined()
   })
 })
