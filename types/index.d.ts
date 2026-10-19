@@ -1,6 +1,6 @@
-export type GitAction = 'commit' | 'push'
+export type GitAction = 'commit' | 'push' | 'force'
 
-export type ActionCounts = { commit: number; push: number }
+export type ActionCounts = { commit: number; push: number; force: number }
 
 export type Grants = ActionCounts & { reserved: ActionCounts; armedTurnId: string | null }
 

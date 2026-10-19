@@ -5,15 +5,20 @@ import { messagesFor, resolveLanguage } from './i18n'
 import type { Messages } from './i18n'
 import { judgeCommand, resolveRules } from './policy'
 import type { Rules, Verdict } from './policy'
+import { actionsThatRan, parseShowRef } from './repo-refs'
+import type { RefSnapshot } from './repo-refs'
 
-const NO_ACTIONS: ActionCounts = { commit: 0, push: 0 }
+const GIT_ACTIONS: readonly GitAction[] = ['commit', 'push', 'force']
+const NO_ACTIONS: ActionCounts = { commit: 0, push: 0, force: 0 }
 const NO_GRANTS: Grants = { ...NO_ACTIONS, reserved: NO_ACTIONS, armedTurnId: null }
 const MAX_GRANT_COUNT = 50
+const NO_REFS_EXIT_CODE = 1
 const GRANTS_REF = { plugin: 'git-guard', key: 'grants' } as const
 
 const GRANT_ARGUMENTS: Readonly<Record<string, readonly GitAction[]>> = {
   commit: ['commit'],
   push: ['push'],
+  force: ['force'],
   ambos: ['commit', 'push'],
   both: ['commit', 'push'],
 }
@@ -32,25 +37,35 @@ const parseGrantRequest = (args: string): GrantRequest | null => {
   return { actions, count }
 }
 
-const activeActions = (current: Grants): GitAction[] =>
-  (['commit', 'push'] as const).filter(action => current[action] > 0)
+const activeActions = (current: Grants): GitAction[] => GIT_ACTIONS.filter(action => current[action] > 0)
 
 const describeActions = (actions: readonly GitAction[], messages: Messages): string =>
-  actions.length === 0 ? messages.nothing : actions.join(` ${messages.and} `)
+  actions.length === 0
+    ? messages.nothing
+    : actions.map(action => messages.actionNames[action]).join(` ${messages.and} `)
 
 const describeGrants = (current: Grants, messages: Messages): string => {
   const active = activeActions(current)
 
   return active.length === 0
     ? messages.nothing
-    : active.map(action => `${current[action]} ${action}`).join(` ${messages.and} `)
+    : active.map(action => `${current[action]} ${messages.actionNames[action]}`).join(` ${messages.and} `)
 }
 
 const describeRequest = ({ actions, count }: GrantRequest, messages: Messages): string =>
   `${describeActions(actions, messages)} ${count === 1 ? messages.singleUse : messages.multipleUses(count)}`
 
-const normalizeGrants = (stored: Grants): Grants =>
-  stored.reserved === undefined ? { ...stored, reserved: NO_ACTIONS } : stored
+const normalizeCounts = (stored: Partial<ActionCounts> | undefined): ActionCounts => ({
+  commit: stored?.commit ?? 0,
+  push: stored?.push ?? 0,
+  force: stored?.force ?? 0,
+})
+
+const normalizeGrants = (stored: Grants): Grants => ({
+  ...normalizeCounts(stored),
+  reserved: normalizeCounts(stored.reserved),
+  armedTurnId: stored.armedTurnId ?? null,
+})
 
 async function readGrants($: EngineInterface): Promise<Grants> {
   const { value = NO_GRANTS } = await $.state.get(GRANTS_REF)
@@ -79,9 +94,10 @@ async function updateGrants($: EngineInterface, change: (current: Grants) => Gra
 const shiftCount = (counts: ActionCounts, actions: readonly GitAction[], delta: number): ActionCounts => ({
   commit: actions.includes('commit') ? counts.commit + delta : counts.commit,
   push: actions.includes('push') ? counts.push + delta : counts.push,
+  force: actions.includes('force') ? counts.force + delta : counts.force,
 })
 
-const pickCounts = ({ commit, push }: ActionCounts): ActionCounts => ({ commit, push })
+const pickCounts = ({ commit, push, force }: ActionCounts): ActionCounts => ({ commit, push, force })
 
 const reserve = (current: Grants, actions: readonly GitAction[]): Grants => ({
   ...shiftCount(pickCounts(current), actions, -1),
@@ -92,17 +108,17 @@ const reserve = (current: Grants, actions: readonly GitAction[]): Grants => ({
 const heldActions = (current: Grants, actions: readonly GitAction[]): GitAction[] =>
   actions.filter(action => current.reserved[action] > 0)
 
-const settle = (current: Grants, actions: readonly GitAction[], didRun: boolean): Grants => {
+const settle = (current: Grants, actions: readonly GitAction[], spent: readonly GitAction[]): Grants => {
   const held = heldActions(current, actions)
 
   if (held.length === 0) {
     return current
   }
 
-  const available = pickCounts(current)
+  const returned = held.filter(action => !spent.includes(action))
 
   return {
-    ...(didRun ? available : shiftCount(available, held, 1)),
+    ...shiftCount(pickCounts(current), returned, 1),
     reserved: shiftCount(current.reserved, held, -1),
     armedTurnId: current.armedTurnId,
   }
@@ -113,6 +129,26 @@ const grant = (current: Grants, { actions, count }: GrantRequest): Grants => ({
   reserved: current.reserved,
   armedTurnId: null,
 })
+
+async function readRefs($: EngineInterface, directory: string | null): Promise<RefSnapshot | null> {
+  if (directory === null) {
+    return null
+  }
+
+  const run = await $.process.run(['git', '-C', directory, 'show-ref', '--head']).catch(() => null)
+
+  return run === null || run.exitCode > NO_REFS_EXIT_CODE || run.isStdoutTruncated ? null : parseShowRef(run.stdout)
+}
+
+async function actionsSpentByFailedCommand(
+  $: EngineInterface,
+  { actions, repoDirectory }: { actions: readonly GitAction[]; repoDirectory: string | null },
+  before: RefSnapshot | null,
+): Promise<readonly GitAction[]> {
+  const after = before === null ? null : await readRefs($, repoDirectory)
+
+  return before === null || after === null ? actions : actionsThatRan(before, after, actions)
+}
 
 async function runGrant($: EngineInterface, args: string, messages: Messages): Promise<{ text: string }> {
   const request = parseGrantRequest(args)
@@ -191,11 +227,13 @@ export const register: Register = (on, options) => {
       return { deny: verdict.reason }
     }
 
+    const refsBefore = verdict.kind === 'consume' ? await readRefs($, verdict.repoDirectory) : null
     const ran = await next(e)
 
     if (verdict.kind === 'consume') {
-      const didRun = ran.deny === undefined && ran.isError !== true
-      await updateGrants($, current => settle(current, verdict.actions, didRun))
+      const didSucceed = ran.deny === undefined && ran.isError !== true
+      const spent = didSucceed ? verdict.actions : await actionsSpentByFailedCommand($, verdict, refsBefore)
+      await updateGrants($, current => settle(current, verdict.actions, spent))
     }
 
     return ran

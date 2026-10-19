@@ -6,7 +6,7 @@
     {
       "name": "git-guard",
       "source": "./",
-      "description": "Stops Claude Code from committing, pushing or opening PRs unless you grant a counted, expiring permission, and checks commit messages"
+      "description": "Stops Claude Code from committing, pushing, force pushing or opening PRs unless you grant a counted, expiring permission, and checks commit messages"
     }
   ]
 }

@@ -1,7 +1,7 @@
 {
   "name": "git-guard",
-  "version": "0.3.0",
-  "description": "Stops Claude Code from committing, pushing or opening PRs unless you grant a counted, expiring permission, and checks commit messages",
+  "version": "0.4.0",
+  "description": "Stops Claude Code from committing, pushing, force pushing or opening PRs unless you grant a counted, expiring permission, and checks commit messages",
   "author": { "name": "Pedro Rozas" },
   "license": "MIT",
   "repository": "https://github.com/PedroRozas/git-guard",
